@@ -1,4 +1,19 @@
 ﻿function Convert_BytesToUrlSafeB64 ($bytes) { [System.Convert]::ToBase64String($bytes).TrimEnd('=') -replace '\+','-' -replace '/','_' }
+function Convert_UrlSafeB64ToBytes ($b64) {
+    $padding = ( 4 - $b64.Length % 4 ) % 4
+    $b64 = $b64 + ("=" * $padding)
+
+    $bytes = [System.Convert]::FromBase64String($b64)
+    
+    $bytes
+}
+
+function Decode_B64($b64) {
+    $bytes = Convert_UrlSafeB64ToBytes $b64
+    $text = [System.Text.Encoding]::UTF8.GetString($bytes)
+
+    $text
+}
 
 function Encode_B64($text) {
 
@@ -6,6 +21,15 @@ function Encode_B64($text) {
    $b64 = Convert_BytesToUrlSafeB64 $bytes
 
    $b64
+}
+
+function Crack_ApiKeyToken($token) {
+    $b64Payload = ( $token      -split ' '  )[1]
+    $b64Claims  = ( $b64Payload -split '\.' )[1]
+
+    $claims = Decode_B64($b64Claims)
+
+    ConvertFrom-Json $claims
 }
 
 function Get_Signature ($key, $text){
@@ -58,14 +82,21 @@ function Create_CommonState (
     if ($creds -or $token -like 'Bearer: *') {
         $uri = "$base/$ver/myorg"
 
-        $headers = ## Need to crack token, or token is not worth much here
+        $headers = 
             if ($token) { @{ 'Authorization' = $token } }
             else { Create_AadHeaders $creds }
     }
     else {
+        if ($token) {
+            $t = Crack_ApiKeyToken $token
+            
+            $workspaceCollectionName = $t.wcn
+            $workspaceId = $t.wid
+        }
+
         $uri = "$base/$ver/collections/$workspaceCollectionName";
         if ($workspaceId) { $uri += "/workspaces/$workspaceId" }
-        
+
         $headers =
             if ($token) { @{ 'Authorization' = $token } }
             else { Create_ApiKeyHeaders $apiKey $workspaceCollectionName $workspaceId $claims }
