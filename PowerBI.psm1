@@ -1,4 +1,7 @@
-﻿function Convert_BytesToUrlSafeB64 ($bytes) { [System.Convert]::ToBase64String($bytes).TrimEnd('=') -replace '\+','-' -replace '/','_' }
+﻿function Convert_BytesToUrlSafeB64 ($bytes) {
+    [System.Convert]::ToBase64String($bytes).TrimEnd('=') -replace '\+','-' -replace '/','_'
+}
+
 function Convert_UrlSafeB64ToBytes ($b64) {
     $padding = ( 4 - $b64.Length % 4 ) % 4
     $b64 = $b64 + ("=" * $padding)
@@ -344,6 +347,38 @@ param(
     ($endpoint, $headers) = Create_CommonState $Environment 'beta' $Credentials $ApiKey $WorkspaceCollectionName $Token
     Execute_Request -Method Get -Uri $endpoint -Headers $headers
 }
+
+# Import PBIX: POST /beta/collections/{wcn}/workspaces/{wid}/imports?datasetDisplayName={datasetName}
+# Check Import: GET /beta/collections/{wcn}/workspaces/{wid}/imports/{iid}
+<# On successful import, information about available reports and datasets is included in the response
+
+{
+    "id":  "{iid}",
+    "importState":  "Succeeded", // InProgress = "Publishing"
+    "createdDateTime":  "2016-03-17T19:48:57.713",
+    "updatedDateTime":  "2016-03-17T19:48:57.713",
+    "reports":  [
+                    {
+                        "id":  "6b5e2bca-7fad-472f-b342-540ca382afdb",
+                        "name":  "SOTU",
+                        "webUrl":  "https://embedded.powerbi.com/reports/6b5e2bca-7fad-472f-b342-540ca382afdb",
+                        "embedUrl":  "https://embedded.powerbi.com/appTokenReportEmbed?reportId=6b5e2bca-7fad-472f-b342-540ca382afdb"
+                    }
+                ],
+    "datasets":  [
+                     {
+                         "id":  "a4815488-d8a9-49ff-88d8-53d61cdf1f5f",
+                         "name":  "SOTU",
+                         "tables":  "",
+                         "webUrl":  "https://embedded.powerbi.com/datasets/a4815488-d8a9-49ff-88d8-53d61cdf1f5f"
+                     }
+                 ],
+    "name":  "{datasetName}"
+}
+
+#>
+
+################################
 
 # Update-Table
 
