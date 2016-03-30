@@ -145,12 +145,18 @@ param(
     [string] $WorkspaceId = $null,
 
     [Parameter()]
-    [System.Collections.Hashtable] $Claims = $null
+    [System.Collections.Hashtable] $Claims = $null,
+
+    [Parameter()]
+    [int] $BeforeBuffer = -1,
+
+    [Parameter()]
+    [int] $AfterBuffer = 1
 )
 
     $now = ([DateTime]::UtcNow - ([DateTime]'1970-01-01T00:00:00Z').ToUniversalTime())
-    $nbf = $now.Add([TimeSpan]::FromMinutes(-10))
-    $exp = $now.Add([TimeSpan]::FromMinutes(10))
+    $nbf = $now.Add([TimeSpan]::FromMinutes($BeforeBuffer))
+    $exp = $now.Add([TimeSpan]::FromMinutes($AfterBuffer))
 
     $body = @{
         'type' = 'dev';
