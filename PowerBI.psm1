@@ -22,42 +22,14 @@ function Get_Signature ($key, $text){
         $b64Hash
     }
     finally {
-        if ($hmac -ne $null) { $hmac.Dispose() }
+        if ($hmac) { $hmac.Dispose() }
     }
 }
 
 function Create_ApiKeyHeaders ([string] $apiKey, [string] $workspaceCollectionName, [string] $workspaceId = $null, [System.Collections.Hashtable] $claims = @{})
 {
-    $now = ([DateTime]::UtcNow - ([DateTime]'1970-01-01T00:00:00Z').ToUniversalTime())
-    $nbf = $now.Add([TimeSpan]::FromMinutes(-10))
-    $exp = $now.Add([TimeSpan]::FromMinutes(10))
-
-    $body = @{
-        'type' = 'dev';
-        'ver' = '0.1.0';
-        'iss' = 'PowerBISDK'; # 'PowerShellBI'; # Should this be PowerBISDK
-        'aud' = 'https://analysis.windows.net/powerbi/api';
-        'wcn' = $workspaceCollectionName;
-        'exp' = [int]$exp.TotalSeconds;
-        'nbf' = [int]$now.TotalSeconds;
-    }
-
-    if ($workspaceId -ne $null) { $body.Add('wid', $workspaceId) }
-
-    $claims.GetEnumerator() |% { $body.Add($_.Name, $_.Value) }
-
-    $jsonHeader = '{"typ":"JWT","alg":"HS256"}'
-    $jsonBody = ConvertTo-Json -Compress $body
-    
-    $b64Header = Encode_B64 $jsonHeader
-    $b64Body   = Encode_B64 $jsonBody
-
-    $signedString = "$b64Header.$b64Body"
-    $signature = Get_Signature $apiKey $signedString
-
-    $payload = "$signedString.$signature"
-
-    @{ 'Authorization' = "AppToken $payload" }
+    $token = Get-ApiKeyToken $apiKey $workspaceCollectionName $workspaceId $claims
+    @{ 'Authorization' = $token }
 }
 
 function Create_AadHeaders ([System.Management.Automation.PSCredential] $creds)
@@ -73,8 +45,9 @@ function Create_CommonState (
     [System.Management.Automation.PSCredential] $creds,
     [string] $apiKey,
     [string] $workspaceCollectionName,
-    [string] $workspaceId,
-    [System.Collections.Hashtable] $claims = @{}
+    [string] $token,
+    [string] $workspaceId = $null,
+    [System.Collections.Hashtable] $claims = $null
 ) {
     ## Configuration Based?
     $base = if ($env -eq "PROD") { "https://api.powerbi.com" } else { "https://dxtapi.powerbi.com" }
@@ -82,14 +55,20 @@ function Create_CommonState (
     $uri = ""
     $headers = @{}
 
-    if ($creds -ne $null) {
+    if ($creds -or $token -like 'Bearer: *') {
         $uri = "$base/$ver/myorg"
-        $headers = Create_AadHeaders $creds }
+
+        $headers = ## Need to crack token, or token is not worth much here
+            if ($token) { @{ 'Authorization' = $token } }
+            else { Create_AadHeaders $creds }
+    }
     else {
         $uri = "$base/$ver/collections/$workspaceCollectionName";
-        if ($workspaceId -ne $null) { $uri += "/workspaces/$workspaceId" }
+        if ($workspaceId) { $uri += "/workspaces/$workspaceId" }
         
-        $headers = Create_ApiKeyHeaders $apiKey $workspaceCollectionName $workspaceId $claims
+        $headers =
+            if ($token) { @{ 'Authorization' = $token } }
+            else { Create_ApiKeyHeaders $apiKey $workspaceCollectionName $workspaceId $claims }
     }
     
     Write-Verbose "COMMON HEADERS: "
@@ -102,10 +81,10 @@ function Execute_Request {
     try {
         Invoke-RestMethod @Args
     }
-    catch { ## 'proper' catch?
-        $resp = $Error[0].Exception.Response
+    catch {
+        $resp = $_.Exception.Response
         
-        $code = $resp.StatusCode
+        $code = [int] $resp.StatusCode
         $desc = $resp.StatusDescription
         
         $rid = $resp.Headers["RequestId"]
@@ -113,6 +92,63 @@ function Execute_Request {
         
         throw "$code`: $desc`nRequest ID: $rid`nActivity ID: $aid"
     }
+}
+
+function Get-AadToken {
+param(
+    [Parameter(ParameterSetName='AAD', Position=0, Mandatory=$true)]
+    [System.Management.Automation.PSCredential] $Credentials   
+)
+    throw "Not Implemented"
+}
+
+function Get-ApiKeyToken {
+param(
+    [Parameter(Mandatory=$true)]
+    [string] $ApiKey,
+    
+    [Parameter(Mandatory=$true)]
+    [string] $WorkspaceCollectionName,
+
+    [Parameter()]
+    [string] $WorkspaceId = $null,
+
+    [Parameter()]
+    [System.Collections.Hashtable] $Claims = $null
+)
+
+    $now = ([DateTime]::UtcNow - ([DateTime]'1970-01-01T00:00:00Z').ToUniversalTime())
+    $nbf = $now.Add([TimeSpan]::FromMinutes(-10))
+    $exp = $now.Add([TimeSpan]::FromMinutes(10))
+
+    $body = @{
+        'type' = 'dev';
+        'ver' = '0.1.0';
+        'iss' = 'PowerBISDK'; # 'PowerShellBI'; # Should this be PowerBISDK
+        'aud' = 'https://analysis.windows.net/powerbi/api';
+        'wcn' = $WorkspaceCollectionName;
+        'exp' = [int]$exp.TotalSeconds;
+        'nbf' = [int]$now.TotalSeconds;
+    }
+
+    if ($WorkspaceId) { $body.Add('wid', $WorkspaceId) }
+
+    if ($Claims) { $Claims.GetEnumerator() |% { $body.Add($_.Name, $_.Value) } }
+
+    $jsonHeader = '{"typ":"JWT","alg":"HS256"}'
+    $jsonBody = ConvertTo-Json -Compress $body
+    
+    $b64Header = Encode_B64 $jsonHeader
+    $b64Body   = Encode_B64 $jsonBody
+
+    $signedString = "$b64Header.$b64Body"
+    $signature = Get_Signature $ApiKey $signedString
+
+    $payload = "$signedString.$signature"
+
+    $token = "AppToken $payload"
+    
+    $token
 }
 
 function Get-Dashboards {
@@ -129,11 +165,14 @@ param(
     [Parameter(ParameterSetName='ApiKey', Position=2, Mandatory=$true)]
     [string] $WorkspaceId,
 
-    [Parameter(ParameterSetName='AAD', Position=0)]
-    [System.Management.Automation.PSCredential] $Credentials
+    [Parameter(ParameterSetName='AAD', Position=0, Mandatory=$true)]
+    [System.Management.Automation.PSCredential] $Credentials,
+
+    [Parameter(ParameterSetName='Token', Position=0, Mandatory=$true)]
+    [string] $Token
 )
 
-    ($endpoint, $headers) = Create_CommonState $Environment 'beta' $Credentials $ApiKey $WorkspaceCollectionName $WorkspaceId
+    ($endpoint, $headers) = Create_CommonState $Environment 'beta' $Credentials $ApiKey $WorkspaceCollectionName $Token $WorkspaceId
     Execute_Request -Method Get -Uri "$endpoint/dashboards" -Headers $headers
 }
 
@@ -151,8 +190,11 @@ param(
     [Parameter(ParameterSetName='ApiKey', Position=2, Mandatory=$true)]
     [string] $WorkspaceId,
 
-    [Parameter(ParameterSetName='AAD', Position=0)]
+    [Parameter(ParameterSetName='AAD', Position=0, Mandatory=$true)]
     [System.Management.Automation.PSCredential] $Credentials,
+
+    [Parameter(ParameterSetName='Token', Position=0, Mandatory=$true)]
+    [string] $Token,
 
     [Parameter(Mandatory=$true)]
     [Guid] $DashboardId,
@@ -161,7 +203,7 @@ param(
     [Guid] $TileId
 )
 
-    ($endpoint, $headers) = Create_CommonState $Environment 'beta' $Credentials $ApiKey $WorkspaceCollectionName $WorkspaceId
+    ($endpoint, $headers) = Create_CommonState $Environment 'beta' $Credentials $ApiKey $WorkspaceCollectionName $Token $WorkspaceId
 
     $uri = "$endpoint/dashboards/$DashboardId/tiles"
     if ($TileId) { $uri += "/$TitleId" }
@@ -183,11 +225,14 @@ param(
     [Parameter(ParameterSetName='ApiKey', Position=2, Mandatory=$true)]
     [string] $WorkspaceId,
 
-    [Parameter(ParameterSetName='AAD', Position=0)]
-    [System.Management.Automation.PSCredential] $Credentials
+    [Parameter(ParameterSetName='AAD', Position=0, Mandatory=$true)]
+    [System.Management.Automation.PSCredential] $Credentials,
+
+    [Parameter(ParameterSetName='Token', Position=0, Mandatory=$true)]
+    [string] $Token
 )
 
-    ($endpoint, $headers) = Create_CommonState $Environment 'beta' $Credentials $ApiKey $WorkspaceCollectionName $WorkspaceId
+    ($endpoint, $headers) = Create_CommonState $Environment 'beta' $Credentials $ApiKey $WorkspaceCollectionName $Token $WorkspaceId
     Execute_Request -Method Get -Uri "$endpoint/reports" -Headers $headers
 }
 
@@ -205,15 +250,18 @@ param(
     [Parameter(ParameterSetName='ApiKey', Position=2, Mandatory=$true)]
     [string] $WorkspaceId,
 
-    [Parameter(ParameterSetName='AAD', Position=0)]
-    [System.Management.Automation.PSCredential] $Credentials
+    [Parameter(ParameterSetName='AAD', Position=0, Mandatory=$true)]
+    [System.Management.Automation.PSCredential] $Credentials,
+
+    [Parameter(ParameterSetName='Token', Position=0, Mandatory=$true)]
+    [string] $Token
 )
 
-    ($endpoint, $headers) = Create_CommonState $Environment 'beta' $Credentials $ApiKey $WorkspaceCollectionName $WorkspaceId
+    ($endpoint, $headers) = Create_CommonState $Environment 'beta' $Credentials $ApiKey $WorkspaceCollectionName $Token $WorkspaceId
     Execute_Request -Method Get -Uri "$endpoint/datasets" -Headers $headers
 }
 
-function New-Dataset {
+function Get-Tables {
 param(
     [Parameter(Mandatory=$false)]
     [string] $Environment = 'PROD',
@@ -227,16 +275,18 @@ param(
     [Parameter(ParameterSetName='ApiKey', Position=2, Mandatory=$true)]
     [string] $WorkspaceId,
 
-    [Parameter(ParameterSetName='AAD', Position=0)]
-    [System.Management.Automation.PSCredential] $Credentials
+    [Parameter(ParameterSetName='AAD', Position=0, Mandatory=$true)]
+    [System.Management.Automation.PSCredential] $Credentials,
 
-    ## DataSet elements here...
+    [Parameter(ParameterSetName='Token', Position=0, Mandatory=$true)]
+    [string] $Token,
+
+    [Parameter()]
+    [string] $DatasetId
 )
 
-    throw "Not Implemented"
-
-    ($endpoint, $headers) = Create_CommonState $Environment 'beta' $Credentials $ApiKey $WorkspaceCollectionName $WorkspaceId
-    ExecuteRequest -Method POST -Uri "$endpoint/datasets" -Headers $headers
+    ($endpoint, $headers) = Create_CommonState $Environment 'beta' $Credentials $ApiKey $WorkspaceCollectionName $Token $WorkspaceId
+    Execute_Request -Method Get -Uri "$endpoint/datasets/$DatasetId/tables" -Headers $headers
 }
 
 function Get-Workspaces {
@@ -248,14 +298,15 @@ param(
     [string] $ApiKey,
 
     [Parameter(Position=1, Mandatory=$true)]
-    [string] $WorkspaceCollectionName
+    [string] $WorkspaceCollectionName,
+
+    [Parameter(ParameterSetName='Token', Position=0, Mandatory=$true)]
+    [string] $Token
 )
 
-    ($endpoint, $headers) = Create_CommonState $Environment 'beta' $Credentials $ApiKey $WorkspaceCollectionName
+    ($endpoint, $headers) = Create_CommonState $Environment 'beta' $Credentials $ApiKey $WorkspaceCollectionName $Token
     Execute_Request -Method Get -Uri $endpoint -Headers $headers
 }
-
-# Get-Tables
 
 # Update-Table
 
@@ -263,5 +314,4 @@ param(
 
 # Get-Groups
 
-## Common Arguments?
-Export-ModuleMember -Function Get-Reports, Get-Datasets #, New-Dataset #, Get-Workspaces
+Export-ModuleMember -Function Get-ApiKeyToken, Get-Reports, Get-Datasets #, New-Dataset #, Get-Workspaces
